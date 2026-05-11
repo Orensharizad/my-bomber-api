@@ -300,7 +300,7 @@ def launch():
     final_logs = []
     task_list = []
     for s in SITES:
-        for _ in range(5): # 5 סבבים לכל אתר
+       for _ in range(1): # סבב אחד בלבד לכל אתר
             task_list.append(s)
     
     random.shuffle(task_list)
